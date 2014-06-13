@@ -226,6 +226,12 @@ private:
     int mPowerMode;
     // Current active config
     int mActiveConfig;
+
+
+#ifdef MTK_MT6589
+public:
+    mutable bool mLayersSwapRequired;
+#endif
 };
 
 }; // namespace android

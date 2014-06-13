@@ -46,6 +46,13 @@ GraphicBufferMapper::GraphicBufferMapper()
     if (err == 0) {
         mAllocMod = (gralloc_module_t const *)module;
     }
+
+#ifdef MTK_MT6589
+    mExtraDev = NULL;
+    if (err == 0) {
+        gralloc_extra_open(module, &mExtraDev);
+    }
+#endif
 }
 
 #ifdef MTK_MT6589

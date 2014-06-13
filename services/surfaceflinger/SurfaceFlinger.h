@@ -134,6 +134,18 @@ public:
         return *mRenderEngine;
     }
 
+#ifdef QCOM_BSP
+    // Extended Mode - No video on primary and it will be shown full
+    // screen on External
+    static bool sExtendedMode;
+    static bool isExtendedMode() { return sExtendedMode; };
+#endif
+#ifdef MTK_MT6589
+    static bool mContentsDirty;
+
+    bool getAndClearLayersSwapRequired(int32_t id);
+    void checkLayersSwapRequired (sp<const DisplayDevice>& hw, const bool prevGlesComposition);
+#endif
 private:
     friend class Client;
     friend class DisplayEventConnection;

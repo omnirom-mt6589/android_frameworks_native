@@ -596,7 +596,16 @@ status_t HWComposer::createWorkList(int32_t id, size_t numLayers) {
                 &disp.framebufferTarget->displayFrame;
             disp.framebufferTarget->acquireFenceFd = -1;
             disp.framebufferTarget->releaseFenceFd = -1;
+#ifdef MTK_MT6589
+	    disp.framebufferTarget->ext.connectApi = -1;
+            disp.framebufferTarget->ext.identity = -1;
+            disp.framebufferTarget->ext.width = disp.width;
+            disp.framebufferTarget->ext.height = disp.height;
+            disp.framebufferTarget->ext.stride = disp.width;
+            disp.framebufferTarget->ext.format = disp.format;
+#else
             disp.framebufferTarget->planeAlpha = 0xFF;
+#endif
         }
         disp.list->retireFenceFd = -1;
         disp.list->flags = HWC_GEOMETRY_CHANGED;
@@ -628,6 +637,13 @@ status_t HWComposer::setFramebufferTarget(int32_t id,
     disp.fbTargetHandle = buf->handle;
     disp.framebufferTarget->handle = disp.fbTargetHandle;
     disp.framebufferTarget->acquireFenceFd = acquireFenceFd;
+
+#ifdef MTK_MT6589
+    disp.framebufferTarget->ext.width = buf->width;
+    disp.framebufferTarget->ext.height = buf->height;
+    disp.framebufferTarget->ext.stride = buf->stride;
+    disp.framebufferTarget->ext.format = buf->format;
+#endif
     return NO_ERROR;
 }
 
@@ -756,6 +772,23 @@ status_t HWComposer::commit() {
             }
         }
 
+#ifdef MTK_MT6589
+	    for (size_t i=0 ; i<mNumDisplays ; i++) {
+	        DisplayData& disp(mDisplayData[i]);
+		if (disp.list && mFlinger->getAndClearLayersSwapRequired(i)) {
+		    disp.list->flags |= HWC_SWAP_REQUIRED;
+		}
+	    }
+#endif
+#ifdef OLD_HWC_API
+        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
+            err = hwcSet(mHwc, mLists[0]->dpy, mLists[0]->sur, mNumDisplays,
+                    const_cast<hwc_display_contents_1_t**>(mLists));
+        } else {
+            err = hwcSet(mHwc, eglGetCurrentDisplay(), eglGetCurrentSurface(EGL_DRAW), mNumDisplays,
+                    const_cast<hwc_display_contents_1_t**>(mLists));
+        }
+#else
         err = mHwc->set(mHwc, mNumDisplays, mLists);
 
         for (size_t i=0 ; i<mNumDisplays ; i++) {
@@ -768,6 +801,12 @@ status_t HWComposer::commit() {
                     disp.list->retireFenceFd = -1;
                 }
                 disp.list->flags &= ~HWC_GEOMETRY_CHANGED;
+#endif
+#ifdef MTK_MT6589
+                hwcFlags(mHwc, disp.list) &=
+			~(HWC_SWAP_REQUIRED | HWC_LAYERSCREENSHOT_EXIST |
+			  HWC_SCREEN_FROZEN | HWC_ORIENTATION_MASK);
+#endif
             }
         }
     }
@@ -918,6 +957,121 @@ private:
     }
 };
 
+        // Aligned to the top-left corner and less than 60px tall
+        if (layer->displayFrame.top == 0 &&
+            layer->displayFrame.left == 0 && layer->displayFrame.bottom < 60) {
+            return true;
+        }
+        // Landscape:
+        // Aligned to the top, right-cropped at less than 60px
+        if (layer->displayFrame.top == 0 &&
+            layer->sourceCrop.right < 60) {
+            return true;
+        }
+        // Upside-down:
+        // Left-aligned, bottom-cropped at less than 60, and the projected frame matches the crop height
+        if (layer->displayFrame.left == 0 && layer->sourceCrop.bottom < 60 &&
+            layer->displayFrame.bottom - layer->displayFrame.top == layer->sourceCrop.bottom) {
+            return true;
+        }
+        return false;
+    }
+
+    virtual void setPlaneAlpha(uint8_t alpha) {
+        bool forceSkip = false;
+        // PREMULT on the statusbar layer will artifact miserably on VERSION_03
+        // due to the translucency, so skip compositing
+        if (getLayer()->blending == HWC_BLENDING_PREMULT && isStatusBar(getLayer())) {
+            forceSkip = true;
+        }
+        if (alpha < 0xFF || forceSkip) {
+#else
+    virtual void setPlaneAlpha(uint8_t alpha) {
+        if (alpha < 0xFF) {
+#endif
+            getLayer()->flags |= HWC_SKIP_LAYER;
+        }
+    }
+    virtual void setAcquireFenceFd(int fenceFd) {
+        if (fenceFd != -1) {
+            ALOGE("HWC 0.x can't handle acquire fences");
+            close(fenceFd);
+        }
+    }
+    virtual void setDefaultState() {
+        getLayer()->compositionType = HWC_FRAMEBUFFER;
+        getLayer()->hints = 0;
+        getLayer()->flags = HWC_SKIP_LAYER;
+        getLayer()->handle = 0;
+        getLayer()->transform = 0;
+        getLayer()->blending = HWC_BLENDING_NONE;
+        getLayer()->visibleRegionScreen.numRects = 0;
+        getLayer()->visibleRegionScreen.rects = NULL;
+    }
+    virtual void setSkip(bool skip) {
+        if (skip) {
+            getLayer()->flags |= HWC_SKIP_LAYER;
+        } else {
+            getLayer()->flags &= ~HWC_SKIP_LAYER;
+        }
+    }
+    virtual void setBlending(uint32_t blending) {
+        getLayer()->blending = blending;
+    }
+    virtual void setTransform(uint32_t transform) {
+        getLayer()->transform = transform;
+    }
+    virtual void setFrame(const Rect& frame) {
+        reinterpret_cast<Rect&>(getLayer()->displayFrame) = frame;
+    }
+    virtual void setCrop(const FloatRect& crop) {
+        hwc_rect_t& r = getLayer()->sourceCrop;
+        r.left  = int(ceilf(crop.left));
+        r.top   = int(ceilf(crop.top));
+        r.right = int(floorf(crop.right));
+        r.bottom= int(floorf(crop.bottom));
+    }
+    virtual void setVisibleRegionScreen(const Region& reg) {
+        // Region::getSharedBuffer creates a reference to the underlying
+        // SharedBuffer of this Region, this reference is freed
+        // in onDisplayed()
+        hwc_region_t& visibleRegion = getLayer()->visibleRegionScreen;
+        SharedBuffer const* sb = reg.getSharedBuffer(&visibleRegion.numRects);
+        visibleRegion.rects = reinterpret_cast<hwc_rect_t const *>(sb->data());
+    }
+    virtual void setBuffer(const sp<GraphicBuffer>& buffer) {
+        if (buffer == 0 || buffer->handle == 0) {
+            getLayer()->compositionType = HWC_FRAMEBUFFER;
+            getLayer()->flags |= HWC_SKIP_LAYER;
+            getLayer()->handle = 0;
+        } else {
+            getLayer()->handle = buffer->handle;
+        }
+    }
+    virtual void onDisplayed() {
+        hwc_region_t& visibleRegion = getLayer()->visibleRegionScreen;
+        SharedBuffer const* sb = SharedBuffer::bufferFromData(visibleRegion.rects);
+        if (sb) {
+            sb->release();
+            // not technically needed but safer
+            visibleRegion.numRects = 0;
+            visibleRegion.rects = NULL;
+        }
+
+    }
+#ifdef MTK_MT6589
+    virtual int getMva() { return 0; }
+    virtual void setLayerType(uint32_t type) { }
+    virtual void setSecure(bool secure) { }
+    virtual void setDirty(bool dirty) { }
+    virtual void setConnectedApi(int32_t api) { }
+    virtual void setIdentity(int32_t id) { }
+    virtual void setFillColor(struct hwc_color color) { }
+    virtual void setMatrix(const Transform& tr) { }
+#endif
+};
+// #endif // !HWC_REMOVE_DEPRECATED_VERSIONS
+#endif
 /*
  * Concrete implementation of HWCLayer for HWC_DEVICE_API_VERSION_1_0.
  * This implements the HWCLayer side of HWCIterableLayer.
@@ -947,7 +1101,9 @@ public:
     }
     virtual void setPlaneAlpha(uint8_t alpha) {
         if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_2)) {
+#ifndef MTK_MT6589
             getLayer()->planeAlpha = alpha;
+#endif
         } else {
             if (alpha < 0xFF) {
                 getLayer()->flags |= HWC_SKIP_LAYER;
@@ -966,7 +1122,17 @@ public:
         l->visibleRegionScreen.rects = NULL;
         l->acquireFenceFd = -1;
         l->releaseFenceFd = -1;
+#ifdef MTK_MT6589
+        getLayer()->ext.connectApi = -1;
+        getLayer()->ext.identity = -1;
+        getLayer()->ext.width = 0;
+        getLayer()->ext.height = 0;
+        getLayer()->ext.stride = 0;
+        getLayer()->ext.format = 0;
+#else
         l->planeAlpha = 0xFF;
+#endif
+
     }
     virtual void setSkip(bool skip) {
         if (skip) {
@@ -1037,6 +1203,13 @@ public:
                 getLayer()->compositionType = HWC_FRAMEBUFFER;
             }
             getLayer()->handle = buffer->handle;
+#ifdef MTK_MT6589
+            getLayer()->ext.width = buffer->width;
+            getLayer()->ext.height = buffer->height;
+            getLayer()->ext.stride = buffer->stride;
+            getLayer()->ext.format = buffer->format;
+            getLayer()->ext.mva = buffer->getMva();
+#endif
         }
     }
     virtual void onDisplayed() {
@@ -1051,6 +1224,40 @@ public:
 
         getLayer()->acquireFenceFd = -1;
     }
+
+#ifdef MTK_MT6589
+    virtual int getMva() {
+        return getLayer()->ext.mva;
+    }
+    virtual void setLayerType(uint32_t type) {
+    }
+    virtual void setSecure(bool secure) {
+    }
+    virtual void setDirty(bool dirty) {
+		if (dirty)
+			getLayer()->flags |= HWC_DIRTY_LAYER;
+		else
+			getLayer()->flags &= ~HWC_DIRTY_LAYER;
+    }
+    virtual void setConnectedApi(int32_t api) {
+        getLayer()->ext.connectApi = api;
+    }
+    virtual void setIdentity(int32_t id) {
+        getLayer()->ext.identity = id;
+    }
+    virtual void setFillColor(struct hwc_color color) {
+        getLayer()->ext.fillColor = color;
+    }
+    virtual void setMatrix(const Transform& tr) {
+        float *m = getLayer()->ext.transformMatrix;
+        for (int i = 0, j = 0; i < 9; i += 3, j++) {
+            m[i + 0] = tr[0][j];
+            m[i + 1] = tr[1][j];
+            m[i + 2] = tr[2][j];
+        }
+    }
+#endif
+
 };
 
 /*
