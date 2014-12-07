@@ -15,7 +15,7 @@
  */
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
-//#define LOG_NDEBUG 0
+#define LOG_NDEBUG 0
 
 #include "SurfaceFlingerConsumer.h"
 
