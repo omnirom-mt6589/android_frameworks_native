@@ -121,7 +121,7 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client,
 #ifdef MTK_MT6589
     mCurrentState.flagsEx = layer_state_t::eExInitValue;
     mCurrentState.usageEx = EXTRA_USAGE_INIT_VALUE;
-    mCurrentState.stConnectedApi = BufferQueue::NO_CONNECTED_API;
+//    mCurrentState.stConnectedApi = BufferQueue::NO_CONNECTED_API;
     mCurrentState.stCurrentTransform = Transform::ROT_INVALID;
     mBufferRefCount = 0;
 #endif

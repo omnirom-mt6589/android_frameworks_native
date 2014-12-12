@@ -133,7 +133,7 @@ DisplayDevice::DisplayDevice(
     setProjection(DisplayState::eOrientationDefault, mViewport, mFrame);
 
 #ifdef MTK_MT6589
-    mLayersSwapRequired = false;
+   mLayersSwapRequired = false;
 #endif
 }
 
